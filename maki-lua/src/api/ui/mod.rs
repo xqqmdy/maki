@@ -8,13 +8,14 @@ use maki_highlight::{DEFAULT_COLOR_NAME, SegmentColor};
 use maki_lua_macro::{lua_fn, lua_table};
 use maki_storage::id::{MakiId, MakiIdParseError};
 use mlua::{Lua, Result as LuaResult, Table};
+use strum::VariantNames;
 
 use crate::api::action::run_plugin_action;
 use crate::api::keymap::{InputMode, accept_key, switch_mode};
 use crate::api::util::command::{
-    Anchor, Border, BuiltinAction, Dimension, FloatConfig, HintEntries, HintEntry, HintWriter,
-    InputDecorate, InputEdit, InputMarks, InputRequest, InputSubmit, Split, TextEdit, TitlePos,
-    UiAction, WinCommand, WinEvent, ui_json_roundtrip, ui_roundtrip, ui_send,
+    Anchor, BlockKind, Border, BuiltinAction, Dimension, FloatConfig, HintEntries, HintEntry,
+    HintWriter, InputDecorate, InputEdit, InputMarks, InputRequest, InputSubmit, Split, TextEdit,
+    TitlePos, UiAction, WinCommand, WinEvent, ui_json_roundtrip, ui_roundtrip, ui_send,
 };
 use crate::api::util::convert::{TableExt, reject_unknown_fields, required};
 use crate::api::util::pair::{Pair, err_pair, try_pair};
@@ -581,6 +582,89 @@ async fn action(
         .await
     );
     Ok((Some(reply), None))
+}
+
+/// Scrolls the focused chat to the top of the {index}th visible block of
+/// {kind}, counting from 1 across the whole transcript. The kinds are the
+/// items a contents pane lists:
+///
+/// - `"turn"`: a visible user message. A turn starts where the user spoke;
+///   everything the model answered with sits under it. Nudges, observations
+///   and other entries the transcript never shows are not counted.
+/// - `"thinking"`: a non-empty thinking block, in order.
+/// - `"reply"`: a non-empty assistant text block, in order.
+///
+/// `maki.ui.transcript_outline()` is what lists the blocks there are; this
+/// call counts the same list per kind, so a pane never has to guess which
+/// messages the chat shows.
+///
+/// Tool calls and results show in the transcript but are blocks of neither
+/// kind, so they are not counted. A collapsed thinking block jumps to its
+/// indicator line; expanding it is a click in the chat, not this call.
+///
+/// The scroll releases the bottom pin, so streaming output stops dragging
+/// the view away from the block you jumped to.
+///
+/// @param kind string One of "turn", "thinking", "reply".
+/// @param index integer 1-based index of the block to show.
+/// @return (boolean|nil, string|nil) `true` on success, or nil and an error when the block does not exist, the kind is unknown, or there is no UI.
+/// @example
+/// -- Jump to the third turn, then the second thinking block:
+/// local ok, err = maki.ui.scroll_to_block("turn", 3)
+/// ok, err = maki.ui.scroll_to_block("thinking", 2)
+#[lua_fn]
+async fn scroll_to_block(
+    _lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+    kind: String,
+    index: usize,
+) -> LuaResult<Pair<bool>> {
+    let kind = try_pair!(kind.parse::<BlockKind>().map_err(|_| format!(
+        "unknown block kind '{kind}' (valid: {})",
+        BlockKind::VARIANTS.join(", ")
+    )));
+    let reply = try_pair!(
+        ui_roundtrip(tx.as_ref(), |reply_tx| UiAction::ScrollToBlock {
+            kind,
+            index,
+            reply_tx
+        })
+        .await
+    );
+    try_pair!(reply);
+    Ok((Some(true), None))
+}
+
+/// Reads the transcript as the chat itself lists it: one entry per jumpable
+/// block, in display order. Each entry is `{ kind, text }` where `kind` is
+/// `"turn"`, `"thinking"` or `"reply"` (see `maki.ui.scroll_to_block`) and
+/// `text` is a first-line preview meant for a contents pane to clip to its
+/// own width.
+///
+/// This is the authority for the numbers `maki.ui.scroll_to_block` consumes:
+/// walk the entries, count the kind you want, and pass that count to jump to
+/// the very entry you counted. Which messages show at all is the chat's
+/// decision alone, so a pane can never disagree with it about what a number
+/// means.
+///
+/// @return (table|nil, string|nil) Array of outline entries, or nil and an error when there is no UI.
+/// @example
+/// -- List every block from the third turn on:
+/// local blocks = maki.ui.transcript_outline()
+/// local n = 0
+/// for _, b in ipairs(blocks or {}) do
+///   if b.kind == "turn" then n = n + 1 end
+///   if n >= 3 then print(b.kind, b.text) end
+/// end
+#[lua_fn]
+async fn transcript_outline(
+    lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+) -> LuaResult<Pair<mlua::Value>> {
+    ui_json_roundtrip(&lua, tx.as_ref(), |reply_tx| UiAction::TranscriptOutline {
+        reply_tx,
+    })
+    .await
 }
 
 async fn input_roundtrip(
@@ -1219,9 +1303,9 @@ lua_table! {
     /// Without a UI (`maki -p`, the sdk, ACP), buffers and the text helpers
     /// still work. The calls that need a screen behave like this:
     ///
-    /// - `input`, `input_edit`, `input_decorate`, `input_submit`, and `action`
-    ///   on a built-in name return `nil, "no interactive UI attached"`.
-    ///   Plugin actions still run.
+    /// - `input`, `input_edit`, `input_decorate`, `input_submit`, `action`
+    ///   on a built-in name, `scroll_to_block`, and `transcript_outline`
+    ///   return `nil, "no interactive UI attached"`. Plugin actions still run.
     /// - `open_editor` returns -1.
     /// - `flash` writes to the log.
     /// - `open_win`, `set_status_hint`, `set_window_title`, `set_mode` and `input_rules` have no effect.
@@ -1384,7 +1468,8 @@ lua_table! {
     extend "maki.ui" => pub(crate) fn add_ui_fns(), DOCS [
         buf, theme_color, theme_style, highlight, markdown, humantime, terminal_size,
         display_width, truncate_text,
-        manual set_mode, manual flash, manual action, manual open_editor, manual open_win, manual set_status_hint,
+        manual set_mode, manual flash, manual action, manual scroll_to_block, manual transcript_outline,
+        manual open_editor, manual open_win, manual set_status_hint,
         manual set_window_title, manual input, manual input_rules, manual input_decorate,
         manual input_edit, manual input_submit,
     ]
@@ -1409,6 +1494,8 @@ pub(crate) fn create_ui_table(
         Arc::clone(&plugin),
         reach.clone(),
     )?;
+    scroll_to_block__register(&t, lua, ui_action_tx.clone())?;
+    transcript_outline__register(&t, lua, ui_action_tx.clone())?;
     open_editor__register(&t, lua, ui_action_tx.clone())?;
     input__register(&t, lua, reach.permissions(), ui_action_tx.clone())?;
     input_edit__register(
