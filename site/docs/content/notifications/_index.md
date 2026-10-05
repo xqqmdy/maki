@@ -43,8 +43,9 @@ maki.setup({
 
 | Value | Behavior |
 | --- | --- |
-| `auto` | Use OSC 9 in a supported terminal. Use BEL otherwise. |
+| `auto` | Use OSC 9 in a supported terminal, OSC 777 in Windows Terminal, and BEL otherwise. |
 | `osc9` | Always send an OSC 9 notification. |
+| `osc777` | Always send an OSC 777 notification. |
 | `bell` | Always send the terminal bell. |
 | `off` | Do not send notifications. |
 
@@ -57,7 +58,7 @@ OSC 9 work when an SSH connection does not preserve `TERM_PROGRAM`.
 
 ## tmux
 
-OSC 9 needs passthrough:
+OSC 9 and OSC 777 need passthrough:
 
 ```tmux
 set -g allow-passthrough all
@@ -87,7 +88,21 @@ can appear while the GNU screen window has focus.
 
 Maki sends OSC 9 directly through Zellij.
 
+## Windows Terminal
+
+Windows Terminal does not support OSC 9, so `auto` sends OSC 777 there. Desktop
+notifications need Windows Terminal 1.26 Preview or newer with notifications
+enabled in Settings, and the window must be in the background. Older versions
+drop OSC 777 silently. BEL stays the fallback for terminals that match no
+notification protocol.
+
+Inside a multiplexer such as herdr or tmux, the multiplexer's pane parser
+consumes OSC 777 before it reaches Windows Terminal. Run the multiplexer's own
+notification feature instead; herdr forwards agent state changes as OSC 777
+toasts.
+
 ## Focus on Windows
 
 This terminal focus protocol is not available on Windows. Maki treats the
-terminal as unfocused so an explicit `bell` or `osc9` setting still works.
+terminal as unfocused so an explicit `bell`, `osc9`, or `osc777` setting still
+works.

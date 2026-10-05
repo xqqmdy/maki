@@ -685,6 +685,7 @@ pub enum NotificationMethod {
     #[default]
     Auto,
     Osc9,
+    Osc777,
     Bell,
     Off,
 }
@@ -1240,7 +1241,7 @@ pub struct UiConfig {
         default = NotificationMethod::Auto,
         ty = "string",
         default_doc = "auto",
-        desc = "Terminal notification method: auto, osc9, bell, or off"
+        desc = "Terminal notification method: auto, osc9, osc777, bell, or off"
     )]
     pub notifications: NotificationMethod,
 
@@ -2878,6 +2879,7 @@ mod tests {
 
     #[test_case("auto", NotificationMethod::Auto ; "auto")]
     #[test_case("osc9", NotificationMethod::Osc9 ; "osc9")]
+    #[test_case("osc777", NotificationMethod::Osc777 ; "osc777")]
     #[test_case("bell", NotificationMethod::Bell ; "bell")]
     #[test_case("off", NotificationMethod::Off ; "off")]
     fn notifications_deserialize(value: &str, expected: NotificationMethod) {

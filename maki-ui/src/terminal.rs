@@ -19,6 +19,7 @@ use maki_config::NotificationMethod;
 
 const FALLBACK_NOTIFICATION_MESSAGE: &str = "Maki needs attention";
 const BELL_SEQUENCE: &str = "\u{7}";
+const NOTIFICATION_TITLE: &str = "Maki";
 /// XTPUSHTITLE saves whatever title the shell left on the window, so the
 /// matching XTPOPTITLE on exit or suspend hands it back and no plugin
 /// title outlives the session. Terminals without a title stack ignore both.
@@ -44,6 +45,7 @@ struct TerminalEnvironment<'a> {
     wezterm: bool,
     iterm: bool,
     kitty: bool,
+    wt: bool,
     term: Option<&'a str>,
 }
 
@@ -55,6 +57,7 @@ struct TmuxClient {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedNotifier {
     Osc9,
+    Osc777,
     Bell,
 }
 
@@ -65,7 +68,7 @@ pub(crate) struct TerminalNotifier {
 
 impl TerminalNotifier {
     pub(crate) fn new(configured: NotificationMethod) -> Option<Self> {
-        let notifier = resolve_notifier(configured, detect_osc9_support)?;
+        let notifier = resolve_notifier(configured, detect_auto_notifier)?;
         Some(Self {
             notifier,
             mux: TerminalMux::detect(),
@@ -81,7 +84,7 @@ impl TerminalNotifier {
     }
 }
 
-fn detect_osc9_support() -> bool {
+fn detect_auto_notifier() -> ResolvedNotifier {
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let term = std::env::var("TERM").ok();
     let env = TerminalEnvironment {
@@ -91,13 +94,20 @@ fn detect_osc9_support() -> bool {
             || std::env::var_os("ITERM_PROFILE").is_some()
             || std::env::var_os("ITERM_PROFILE_NAME").is_some(),
         kitty: std::env::var_os("KITTY_WINDOW_ID").is_some(),
+        // Wrappers such as herdr clear WT_SESSION but leave WT_PROFILE_ID,
+        // and an empty value must not count as running under Windows Terminal.
+        wt: non_empty_env("WT_SESSION") || non_empty_env("WT_PROFILE_ID"),
         term: term.as_deref(),
     };
     let tmux = env
         .term_program
         .filter(|value| normalize_terminal_id(value) == "tmux")
         .and_then(|_| query_tmux_client());
-    auto_supports_osc9(&env, tmux.as_ref())
+    auto_notifier(&env, tmux.as_ref())
+}
+
+fn non_empty_env(key: &str) -> bool {
+    std::env::var(key).is_ok_and(|value| !value.is_empty())
 }
 
 fn normalize_terminal_id(value: &str) -> String {
@@ -127,17 +137,24 @@ fn supports_osc9(value: &str) -> bool {
 
 fn resolve_notifier(
     configured: NotificationMethod,
-    auto_supports_osc9: impl FnOnce() -> bool,
+    auto: impl FnOnce() -> ResolvedNotifier,
 ) -> Option<ResolvedNotifier> {
     match configured {
         NotificationMethod::Off => None,
         NotificationMethod::Osc9 => Some(ResolvedNotifier::Osc9),
+        NotificationMethod::Osc777 => Some(ResolvedNotifier::Osc777),
         NotificationMethod::Bell => Some(ResolvedNotifier::Bell),
-        NotificationMethod::Auto => Some(if auto_supports_osc9() {
-            ResolvedNotifier::Osc9
-        } else {
-            ResolvedNotifier::Bell
-        }),
+        NotificationMethod::Auto => Some(auto()),
+    }
+}
+
+fn auto_notifier(env: &TerminalEnvironment<'_>, tmux: Option<&TmuxClient>) -> ResolvedNotifier {
+    if auto_supports_osc9(env, tmux) {
+        ResolvedNotifier::Osc9
+    } else if env.wt {
+        ResolvedNotifier::Osc777
+    } else {
+        ResolvedNotifier::Bell
     }
 }
 
@@ -230,6 +247,12 @@ fn notification_sequence(notifier: ResolvedNotifier, mux: TerminalMux, message: 
         ResolvedNotifier::Osc9 => {
             let message = sanitize_notification_message(message);
             mux.wrap_for_mux(format!("\u{1b}]9;{message}\u{7}"))
+        }
+        ResolvedNotifier::Osc777 => {
+            let message = sanitize_notification_message(message);
+            mux.wrap_for_mux(format!(
+                "\u{1b}]777;notify;{NOTIFICATION_TITLE};{message}\u{7}"
+            ))
         }
         ResolvedNotifier::Bell => BELL_SEQUENCE.to_string(),
     }
@@ -476,6 +499,10 @@ mod tests {
             Some(ResolvedNotifier::Osc9)
         );
         assert_eq!(
+            resolve_notifier(NotificationMethod::Osc777, || panic!("auto detection ran")),
+            Some(ResolvedNotifier::Osc777)
+        );
+        assert_eq!(
             resolve_notifier(NotificationMethod::Bell, || panic!("auto detection ran")),
             Some(ResolvedNotifier::Bell)
         );
@@ -484,13 +511,37 @@ mod tests {
             None
         );
         assert_eq!(
-            resolve_notifier(NotificationMethod::Auto, || true),
+            resolve_notifier(NotificationMethod::Auto, || ResolvedNotifier::Osc9),
             Some(ResolvedNotifier::Osc9)
         );
         assert_eq!(
-            resolve_notifier(NotificationMethod::Auto, || false),
+            resolve_notifier(NotificationMethod::Auto, || ResolvedNotifier::Osc777),
+            Some(ResolvedNotifier::Osc777)
+        );
+        assert_eq!(
+            resolve_notifier(NotificationMethod::Auto, || ResolvedNotifier::Bell),
             Some(ResolvedNotifier::Bell)
         );
+    }
+
+    #[test]
+    fn auto_detects_windows_terminal_after_osc9_check() {
+        let terminal = TerminalEnvironment {
+            wt: true,
+            ..TerminalEnvironment::default()
+        };
+        assert!(!auto_supports_osc9(&terminal, None));
+        assert_eq!(auto_notifier(&terminal, None), ResolvedNotifier::Osc777);
+        let wrapped = TerminalEnvironment {
+            wt: true,
+            ..env(Some("herdr"))
+        };
+        assert_eq!(auto_notifier(&wrapped, None), ResolvedNotifier::Osc777);
+        let hosted = TerminalEnvironment {
+            wt: true,
+            ..env(Some("Ghostty"))
+        };
+        assert_eq!(auto_notifier(&hosted, None), ResolvedNotifier::Osc9);
     }
 
     #[test]
@@ -566,10 +617,15 @@ mod tests {
     fn notification_sequences_encode_message_and_keep_bell_raw() {
         const MESSAGE: &str = "Task complete";
         const OSC9_SEQUENCE: &str = "\u{1b}]9;Task complete\u{7}";
+        const OSC777_SEQUENCE: &str = "\u{1b}]777;notify;Maki;Task complete\u{7}";
 
         assert_eq!(
             notification_sequence(ResolvedNotifier::Osc9, TerminalMux::None, MESSAGE),
             OSC9_SEQUENCE
+        );
+        assert_eq!(
+            notification_sequence(ResolvedNotifier::Osc777, TerminalMux::None, MESSAGE),
+            OSC777_SEQUENCE
         );
         assert_eq!(
             notification_sequence(ResolvedNotifier::Bell, TerminalMux::Tmux, MESSAGE),
@@ -624,6 +680,20 @@ mod tests {
         let screen = notification_sequence(ResolvedNotifier::Osc9, TerminalMux::Screen, MESSAGE);
         assert_eq!(parse_dcs_passthrough(&tmux, "\u{1b}Ptmux;"), OSC9_SEQUENCE);
         assert_eq!(parse_dcs_passthrough(&screen, "\u{1b}P"), OSC9_SEQUENCE);
+    }
+
+    #[test]
+    fn osc777_roundtrips_mux_passthrough() {
+        const MESSAGE: &str = "Task complete";
+        const OSC777_SEQUENCE: &str = "\u{1b}]777;notify;Maki;Task complete\u{7}";
+
+        let tmux = notification_sequence(ResolvedNotifier::Osc777, TerminalMux::Tmux, MESSAGE);
+        let screen = notification_sequence(ResolvedNotifier::Osc777, TerminalMux::Screen, MESSAGE);
+        assert_eq!(
+            parse_dcs_passthrough(&tmux, "\u{1b}Ptmux;"),
+            OSC777_SEQUENCE
+        );
+        assert_eq!(parse_dcs_passthrough(&screen, "\u{1b}P"), OSC777_SEQUENCE);
     }
 
     #[test]
