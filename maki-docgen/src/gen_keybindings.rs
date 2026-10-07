@@ -1,4 +1,4 @@
-use maki_ui::keybindings::{ALT_SEP, KEYBINDS, KeyLabel, KeybindContext, Platform, all_contexts};
+use maki_ui::keybindings::{all_contexts, KeyLabel, KeybindContext, Platform, ALT_SEP, KEYBINDS};
 
 const FRONTMATTER: &str = "\
 +++
@@ -23,11 +23,8 @@ const LUA_CONTEXT_BINDS: &[(&str, &str, &str)] = &[
 ];
 
 // Built-in plugins own these globally, so they never reach `KEYBINDS`.
-const PLUGIN_BINDS: &[(&str, &str)] = &[
-    ("`Ctrl+P`", "Browse sessions"),
-    ("`Ctrl+X`", "Open tasks"),
-    ("`Alt+T`", "Thinking effort"),
-];
+const PLUGIN_BINDS: &[(&str, &str)] =
+    &[("`Ctrl+P`", "Browse sessions"), ("`Ctrl+X`", "Open tasks")];
 
 const MAIN_CONTEXTS: &[KeybindContext] = &[
     KeybindContext::General,
