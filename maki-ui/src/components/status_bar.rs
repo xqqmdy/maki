@@ -12,11 +12,11 @@ use crate::theme;
 
 use maki_providers::format_tokens;
 use notify::{Config, Error, Event, EventKindMask, RecommendedWatcher, RecursiveMode, Watcher};
-use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 use tracing::warn;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -105,6 +105,7 @@ impl StatusBar {
     /// Shows {msg} now, replacing whatever was showing. It answers something
     /// the user just did, and they want the latest state, not the one before.
     pub fn flash(&mut self, msg: String) {
+        warn!(msg = %msg, "status bar message");
         self.flash = Some((msg, Instant::now()));
     }
 
@@ -112,6 +113,7 @@ impl StatusBar {
     /// Startup warnings come in a batch, and [`Self::flash`] would keep only
     /// the last of them.
     pub fn queue_flash(&mut self, msg: String) {
+        warn!(msg = %msg, "status bar message");
         if self.flash.is_some() {
             self.queued.push_back(msg);
             return;
